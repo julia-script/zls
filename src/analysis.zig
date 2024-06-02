@@ -3109,38 +3109,36 @@ pub fn nodeToString(tree: Ast, node: Ast.Node.Index) ?[]const u8 {
 
 pub const PositionContext = union(enum) {
     builtin: offsets.Loc,
-    comment,
     import_string_literal: offsets.Loc,
     cinclude_string_literal: offsets.Loc,
     embedfile_string_literal: offsets.Loc,
     string_literal: offsets.Loc,
     field_access: offsets.Loc,
     var_access: offsets.Loc,
-    global_error_set,
+    label_access: offsets.Loc,
     enum_literal: offsets.Loc,
-    /// - `break <cursor>`
-    /// - `continue <cursor>`
-    pre_label,
-    label: bool,
+    global_error_set,
+    comment,
     other,
     empty,
 
     pub fn loc(self: PositionContext) ?offsets.Loc {
         return switch (self) {
-            .builtin => |r| r,
-            .comment => null,
-            .import_string_literal => |r| r,
-            .cinclude_string_literal => |r| r,
-            .embedfile_string_literal => |r| r,
-            .string_literal => |r| r,
-            .field_access => |r| r,
-            .var_access => |r| r,
-            .enum_literal => |r| r,
-            .pre_label => null,
-            .label => null,
-            .other => null,
-            .empty => null,
-            .global_error_set => null,
+            .builtin,
+            .import_string_literal,
+            .cinclude_string_literal,
+            .embedfile_string_literal,
+            .string_literal,
+            .field_access,
+            .var_access,
+            .label_access,
+            .enum_literal,
+            => |l| return l,
+            .global_error_set,
+            .comment,
+            .other,
+            .empty,
+            => return null,
         };
     }
 };
@@ -3267,6 +3265,18 @@ pub fn getPositionContext(
             var curr_ctx = try peek(allocator, &stack);
             switch (tok.tag) {
                 .string_literal, .multiline_string_literal_line => string_lit_block: {
+                    const string_literal_slice = offsets.locToSlice(held_line, tok.loc);
+                    var string_literal_loc = tok.loc;
+
+                    if (std.mem.startsWith(u8, string_literal_slice, "\"")) {
+                        string_literal_loc.start += 1;
+                        if (std.mem.endsWith(u8, string_literal_slice[1..], "\"")) {
+                            string_literal_loc.end -= 1;
+                        }
+                    } else if (std.mem.startsWith(u8, string_literal_slice, "\\")) {
+                        string_literal_loc.start += 2;
+                    }
+
                     if (curr_ctx.stack_id == .Paren and stack.items.len >= 2) {
                         const perhaps_builtin = stack.items[stack.items.len - 2];
 
@@ -3274,52 +3284,44 @@ pub fn getPositionContext(
                             .builtin => |loc| {
                                 const builtin_name = tokenizer.buffer[loc.start..loc.end];
                                 if (std.mem.eql(u8, builtin_name, "@import")) {
-                                    curr_ctx.ctx = .{ .import_string_literal = tok.loc };
+                                    curr_ctx.ctx = .{ .import_string_literal = string_literal_loc };
                                     break :string_lit_block;
                                 } else if (std.mem.eql(u8, builtin_name, "@cInclude")) {
-                                    curr_ctx.ctx = .{ .cinclude_string_literal = tok.loc };
+                                    curr_ctx.ctx = .{ .cinclude_string_literal = string_literal_loc };
                                     break :string_lit_block;
                                 } else if (std.mem.eql(u8, builtin_name, "@embedFile")) {
-                                    curr_ctx.ctx = .{ .embedfile_string_literal = tok.loc };
+                                    curr_ctx.ctx = .{ .embedfile_string_literal = string_literal_loc };
                                     break :string_lit_block;
                                 }
                             },
                             else => {},
                         }
                     }
-                    curr_ctx.ctx = .{ .string_literal = tok.loc };
+                    curr_ctx.ctx = .{ .string_literal = string_literal_loc };
                 },
                 .identifier => switch (curr_ctx.ctx) {
-                    .empty, .pre_label, .var_access => curr_ctx.ctx = .{ .var_access = tok.loc },
-                    .label => curr_ctx.ctx = .{ .label = true },
+                    .empty, .var_access => curr_ctx.ctx = .{ .var_access = tok.loc },
                     .enum_literal => curr_ctx.ctx = .{
                         .enum_literal = tokenLocAppend(curr_ctx.ctx.loc().?, tok),
                     },
                     else => {},
                 },
                 .builtin => switch (curr_ctx.ctx) {
-                    .empty, .pre_label => curr_ctx.ctx = .{ .builtin = tok.loc },
+                    .empty => curr_ctx.ctx = .{ .builtin = tok.loc },
                     else => {},
                 },
                 .period, .period_asterisk => switch (curr_ctx.ctx) {
-                    .empty, .pre_label => curr_ctx.ctx = .{ .enum_literal = tok.loc },
+                    .empty => curr_ctx.ctx = .{ .enum_literal = tok.loc },
                     .enum_literal => curr_ctx.ctx = .empty,
                     .field_access => {},
                     .other => {},
                     .global_error_set => {},
-                    .label => |filled| if (filled) {
-                        curr_ctx.ctx = .{ .enum_literal = tok.loc };
-                    },
                     else => curr_ctx.ctx = .{
                         .field_access = tokenLocAppend(curr_ctx.ctx.loc().?, tok),
                     },
                 },
-                .keyword_break, .keyword_continue => curr_ctx.ctx = .pre_label,
-                .colon => switch (curr_ctx.ctx) {
-                    .pre_label => curr_ctx.ctx = .{ .label = true },
-                    .var_access => curr_ctx.ctx = .{ .label = false },
-                    else => curr_ctx.ctx = .empty,
-                },
+                // .keyword_break, .keyword_continue => curr_ctx.ctx = .break_or_continue,
+                .colon => {}, //
                 .question_mark => switch (curr_ctx.ctx) {
                     .field_access => {},
                     else => curr_ctx.ctx = .empty,
@@ -3354,21 +3356,6 @@ pub fn getPositionContext(
         if (stack.popOrNull()) |state| {
             switch (state.ctx) {
                 .empty => {},
-                .var_access => {
-                    if (lookahead and
-                        tokenizer.next().tag == .colon and
-                        tokenizer.next().tag == .l_brace)
-                    {
-                        return .{ .label = true };
-                    }
-                    return state.ctx;
-                },
-                .label => |filled| {
-                    if (filled) return state.ctx;
-                    if (lookahead and tokenizer.next().tag == .l_brace) {
-                        return .{ .label = true };
-                    }
-                },
                 else => return state.ctx,
             }
         }

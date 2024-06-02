@@ -67,6 +67,7 @@ fn gotoDefinitionLabel(
     arena: std.mem.Allocator,
     handle: *DocumentStore.Handle,
     pos_index: usize,
+    loc: offsets.Loc,
     kind: GotoKind,
     offset_encoding: offsets.Encoding,
 ) error{OutOfMemory}!?types.DefinitionLink {
@@ -74,10 +75,9 @@ fn gotoDefinitionLabel(
     defer tracy_zone.end();
     _ = arena;
 
-    const name_loc = Analyser.identifierLocFromPosition(pos_index, handle) orelse return null;
-    const name = offsets.locToSlice(handle.tree.source, name_loc);
+    const name = offsets.locToSlice(handle.tree.source, loc);
     const decl = (try Analyser.getLabelGlobal(pos_index, handle, name)) orelse return null;
-    return try gotoDefinitionSymbol(analyser, offsets.locToRange(handle.tree.source, name_loc, offset_encoding), decl, kind, offset_encoding);
+    return try gotoDefinitionSymbol(analyser, offsets.locToRange(handle.tree.source, loc, offset_encoding), decl, kind, offset_encoding);
 }
 
 fn gotoDefinitionGlobal(
@@ -193,13 +193,8 @@ fn gotoDefinitionString(
     defer tracy_zone.end();
 
     const loc = pos_context.loc().?;
-    var import_str_loc = offsets.tokenIndexToLoc(handle.tree.source, loc.start);
-    if (import_str_loc.end - import_str_loc.start < 2) return null;
-    import_str_loc.start += 1;
-    if (std.mem.endsWith(u8, offsets.locToSlice(handle.tree.source, import_str_loc), "\"")) {
-        import_str_loc.end -= 1;
-    }
-    const import_str = offsets.locToSlice(handle.tree.source, import_str_loc);
+    if (loc.start == loc.end) return null;
+    const import_str = offsets.locToSlice(handle.tree.source, loc);
 
     const uri = switch (pos_context) {
         .import_string_literal,
@@ -230,7 +225,7 @@ fn gotoDefinitionString(
         .end = .{ .line = 0, .character = 0 },
     };
     return types.DefinitionLink{
-        .originSelectionRange = offsets.locToRange(handle.tree.source, import_str_loc, offset_encoding),
+        .originSelectionRange = offsets.locToRange(handle.tree.source, loc, offset_encoding),
         .targetUri = uri orelse return null,
         .targetRange = target_range,
         .targetSelectionRange = target_range,
@@ -277,7 +272,7 @@ pub fn gotoHandler(
         .cinclude_string_literal,
         .embedfile_string_literal,
         => try gotoDefinitionString(&server.document_store, arena, pos_context, handle, server.offset_encoding),
-        .label => try gotoDefinitionLabel(&analyser, arena, handle, source_index, kind, server.offset_encoding),
+        .label_access => |loc| try gotoDefinitionLabel(&analyser, arena, handle, source_index, loc, kind, server.offset_encoding),
         .enum_literal => try gotoDefinitionEnumLiteral(&analyser, arena, handle, source_index, kind, server.offset_encoding),
         else => null,
     } orelse return null;

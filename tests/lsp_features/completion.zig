@@ -2364,7 +2364,7 @@ test "builtin fn `field`" {
     });
 }
 
-test "block" {
+test "label" {
     try testCompletion(
         \\const foo = blk: {
         \\    break :<cursor>

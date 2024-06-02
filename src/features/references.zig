@@ -448,7 +448,7 @@ pub fn referencesHandler(server: *Server, arena: std.mem.Allocator, request: Gen
 
             break :z null;
         },
-        .label => try Analyser.getLabelGlobal(source_index, handle, name),
+        .label_access => try Analyser.getLabelGlobal(source_index, handle, name),
         .enum_literal => try analyser.getSymbolEnumLiteral(arena, handle, source_index, name),
         else => null,
     } orelse return null;

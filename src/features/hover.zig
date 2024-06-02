@@ -157,14 +157,14 @@ fn hoverDefinitionLabel(
     arena: std.mem.Allocator,
     handle: *DocumentStore.Handle,
     pos_index: usize,
+    loc: offsets.Loc,
     markup_kind: types.MarkupKind,
     offset_encoding: offsets.Encoding,
 ) error{OutOfMemory}!?types.Hover {
     const tracy_zone = tracy.trace(@src());
     defer tracy_zone.end();
 
-    const name_loc = Analyser.identifierLocFromPosition(pos_index, handle) orelse return null;
-    const name = offsets.locToSlice(handle.tree.source, name_loc);
+    const name = offsets.locToSlice(handle.tree.source, loc);
     const decl = (try Analyser.getLabelGlobal(pos_index, handle, name)) orelse return null;
 
     return .{
@@ -174,7 +174,7 @@ fn hoverDefinitionLabel(
                 .value = (try hoverSymbol(analyser, arena, decl, markup_kind)) orelse return null,
             },
         },
-        .range = offsets.locToRange(handle.tree.source, name_loc, offset_encoding),
+        .range = offsets.locToRange(handle.tree.source, loc, offset_encoding),
     };
 }
 
@@ -359,7 +359,7 @@ pub fn hover(
         .builtin => try hoverDefinitionBuiltin(analyser, arena, handle, source_index, markup_kind, offset_encoding),
         .var_access => try hoverDefinitionGlobal(analyser, arena, handle, source_index, markup_kind, offset_encoding),
         .field_access => |loc| try hoverDefinitionFieldAccess(analyser, arena, handle, source_index, loc, markup_kind, offset_encoding),
-        .label => try hoverDefinitionLabel(analyser, arena, handle, source_index, markup_kind, offset_encoding),
+        .label_access => |loc| try hoverDefinitionLabel(analyser, arena, handle, source_index, loc, markup_kind, offset_encoding),
         .enum_literal => try hoverDefinitionEnumLiteral(analyser, arena, handle, source_index, markup_kind, offset_encoding),
         else => null,
     };

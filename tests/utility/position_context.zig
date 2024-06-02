@@ -116,6 +116,44 @@ test "var access" {
     );
 }
 
+test "no lookahead" {
+    try testContextOptions(
+        \\const a_var =<cursor> identifier;
+    ,
+        .empty,
+        null,
+        false,
+    );
+    try testContextOptions(
+        \\const a_var = <cursor>identifier;
+    ,
+        .empty,
+        null,
+        false,
+    );
+    try testContextOptions(
+        \\const a_var = iden<cursor>tifier;
+    ,
+        .var_access,
+        "iden",
+        false,
+    );
+    try testContextOptions(
+        \\const a_var = identifier<cursor>;
+    ,
+        .var_access,
+        "identifier",
+        false,
+    );
+    try testContextOptions(
+        \\const a_var = identifier;<cursor>
+    ,
+        .empty,
+        null,
+        false,
+    );
+}
+
 test "field access" {
     try testContext(
         \\if (bar.<cursor>field == foo) {
@@ -185,13 +223,13 @@ test "field access" {
         \\if (bar.<cursor>@"field" == foo) {
     ,
         .field_access,
-        "bar.@\"field",
+        "bar.@\"field\"",
     );
     try testContext(
         \\if (bar.@"fie<cursor>ld" == foo) {
     ,
         .field_access,
-        "bar.@\"field",
+        "bar.@\"field\"",
     );
     try testContext(
         \\if (bar.@"field"<cursor> == foo) {
@@ -266,6 +304,12 @@ test "builtin" {
         null,
     );
     try testContext(
+        \\var foo = @<cursor>
+    ,
+        .builtin,
+        "@",
+    );
+    try testContext(
         \\var foo = <cursor>@intC(u32, 5);
     ,
         .builtin,
@@ -332,44 +376,50 @@ test "comment" {
 }
 
 test "import/embedfile string literal" {
-    try testContext(
+    try testContextOptions(
         \\const std = @import("s<cursor>t");
     ,
         .import_string_literal,
-        "\"st", // maybe report just "st"
+        "\"s", // maybe report just "s"
+        false,
     );
-    try testContext(
+    try testContextOptions(
         \\const std = @import("st<cursor>");
     ,
         .import_string_literal,
         "\"st", // maybe report just "st"
+        false,
     );
-    try testContext(
+    try testContextOptions(
         \\const std = @embedFile("file.<cursor>");
     ,
         .embedfile_string_literal,
         "\"file.", // maybe report just "file."
+        false,
     );
-    try testContext(
+    try testContextOptions(
         \\const std = @embedFile("file<cursor>.");
     ,
         .embedfile_string_literal,
         "\"file", // maybe report just "file."
+        false,
     );
 }
 
 test "string literal" {
-    try testContext(
+    try testContextOptions(
         \\var foo = "he<cursor>llo world!";
     ,
         .string_literal,
-        "\"hello",
+        "\"he",
+        false,
     );
-    try testContext(
+    try testContextOptions(
         \\var foo = \\hell<cursor>o;
     ,
         .string_literal,
-        "\\\\hell", // XXX: where's the 'o'?
+        "\\\\hell",
+        false,
     );
 }
 
@@ -432,7 +482,7 @@ test "enum literal" {
         \\var foo = .ta<cursor>g;
     ,
         .enum_literal,
-        ".ta",
+        ".tag",
     );
     try testContext(
         \\var foo = .tag<cursor>;
@@ -468,12 +518,6 @@ test "label" {
         null,
     );
     try testContext(
-        \\var foo = blk: { break <cursor>:blk null };
-    ,
-        .pre_label,
-        null,
-    );
-    try testContext(
         \\var foo = blk: { break :<cursor>blk null };
     ,
         .label,
@@ -489,6 +533,18 @@ test "label" {
         \\var foo = blk: { break :blk<cursor> null };
     ,
         .label,
+        null,
+    );
+    try testContext(
+        \\break :<cursor>
+    ,
+        .label,
+        null,
+    );
+    try testContext(
+        \\fn foo(mode: <cursor>
+    ,
+        .empty,
         null,
     );
 }
@@ -521,11 +577,15 @@ test "empty" {
 }
 
 fn testContext(line: []const u8, tag: std.meta.Tag(Analyser.PositionContext), maybe_range: ?[]const u8) !void {
+    try testContextOptions(line, tag, maybe_range, true);
+}
+
+fn testContextOptions(line: []const u8, tag: std.meta.Tag(Analyser.PositionContext), maybe_range: ?[]const u8, lookahead: bool) !void {
     const cursor_idx = std.mem.indexOf(u8, line, "<cursor>").?;
     const final_line = try std.mem.concat(allocator, u8, &.{ line[0..cursor_idx], line[cursor_idx + "<cursor>".len ..] });
     defer allocator.free(final_line);
 
-    const ctx = try Analyser.getPositionContext(allocator, final_line, cursor_idx, true);
+    const ctx = try Analyser.getPositionContext(allocator, final_line, cursor_idx, lookahead);
 
     if (std.meta.activeTag(ctx) != tag) {
         std.debug.print("Expected tag `{s}`, got `{s}`\n", .{ @tagName(tag), @tagName(std.meta.activeTag(ctx)) });

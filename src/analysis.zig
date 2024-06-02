@@ -3118,6 +3118,8 @@ pub const PositionContext = union(enum) {
     var_access: offsets.Loc,
     global_error_set,
     enum_literal: offsets.Loc,
+    /// - `break <cursor>`
+    /// - `continue <cursor>`
     pre_label,
     label: bool,
     other,
@@ -3181,30 +3183,14 @@ pub fn getPositionContext(
     const tracy_zone = tracy.trace(@src());
     defer tracy_zone.end();
 
-    var new_index = doc_index;
-    if (lookahead and new_index + 2 < text.len) {
-        if (text[new_index] == '@') new_index += 2;
-        while (new_index < text.len and isSymbolChar(text[new_index])) : (new_index += 1) {}
-        switch (text[new_index]) {
-            ':' => { // look for `id:`, but avoid `a: T` by checking for a `{` following the ':'
-                var b_index = new_index + 1;
-                while (b_index < text.len and text[b_index] == ' ') : (b_index += 1) {} // eat spaces
-                if (text[b_index] == '{') new_index += 1; // current new_index points to ':', but slc ends are exclusive => `text[0..pos_of_r_brace]`
-            },
-            // ';' => new_index += 1, // XXX: currently given `some;` the last letter gets cut off, ie `som`, but fixing it breaks existing logic.. ?
-            else => {},
-        }
-    }
+    const new_index = doc_index;
+    var line_loc = if (lookahead) offsets.lineLocAtIndex(text, new_index) else offsets.lineLocUntilIndex(text, new_index);
 
-    const prev_char = if (new_index > 0) text[new_index - 1] else 0;
-    var line_loc = if (!lookahead) offsets.lineLocAtIndex(text, new_index) else offsets.lineLocUntilIndex(text, new_index);
-    const line = offsets.locToSlice(text, line_loc);
-
-    if (std.mem.startsWith(u8, std.mem.trimLeft(u8, line, " \t"), "//")) return .comment;
+    if (std.mem.startsWith(u8, std.mem.trimLeft(u8, offsets.locToSlice(text, line_loc), " \t"), "//")) return .comment;
 
     // Check if the (trimmed) line starts with a '.', ie a continuation
     while (line_loc.start > 0) {
-        while (std.mem.startsWith(u8, std.mem.trimLeft(u8, text[line_loc.start..line_loc.end], " \t\r"), ".")) {
+        while (std.mem.startsWith(u8, std.mem.trimLeft(u8, offsets.locToSlice(text, line_loc), " \t\r"), ".")) {
             if (line_loc.start > 1) {
                 line_loc.start -= 2; // jump over a (potential) preceding '\n'
             } else break;
@@ -3215,7 +3201,7 @@ pub fn getPositionContext(
                 }
             } else break;
         }
-        if (line_loc.start != 0 and std.mem.startsWith(u8, std.mem.trimLeft(u8, text[line_loc.start..line_loc.end], " \t"), "//")) {
+        if (line_loc.start != 0 and std.mem.startsWith(u8, std.mem.trimLeft(u8, offsets.locToSlice(text, line_loc), " \t"), "//")) {
             const prev_line_loc = offsets.lineLocAtIndex(text, line_loc.start - 1); // `- 1` => prev line's `\n`
             line_loc.start = prev_line_loc.start;
             continue;
@@ -3227,6 +3213,8 @@ pub fn getPositionContext(
     defer stack.deinit(allocator);
 
     {
+        var should_do_lookahead = lookahead;
+
         var held_line = try allocator.dupeZ(u8, text[0..line_loc.end]);
         defer allocator.free(held_line);
 
@@ -3237,24 +3225,30 @@ pub fn getPositionContext(
         };
 
         while (true) {
-            var tok = tokenizer.next();
-            // Early exits.
-            if (tok.loc.start > new_index) break;
-            if (tok.loc.start == new_index) {
+            const peeked_token = blk: {
+                const old_tokenizer_index = tokenizer.index;
+                const token = tokenizer.next();
+                tokenizer.index = old_tokenizer_index;
+                break :blk token;
+            };
+            if (new_index < peeked_token.loc.start) break;
+            if (new_index == peeked_token.loc.start) {
                 // Tie-breaking, the cursor is exactly between two tokens, and
                 // `tok` is the latter of the two.
-                if (tok.tag != .identifier) break;
+                if (!should_do_lookahead) break;
+                switch (peeked_token.tag) {
+                    .identifier, .builtin, .colon => should_do_lookahead = false,
+                    else => break,
+                }
             }
+            var tok = peeked_token;
+            tokenizer.index = peeked_token.loc.end;
+
             switch (tok.tag) {
                 .invalid => {
                     // Single '@' do not return a builtin token so we check this on our own.
-                    if (prev_char == '@') {
-                        return PositionContext{
-                            .builtin = .{
-                                .start = line_loc.end - 1,
-                                .end = line_loc.end,
-                            },
-                        };
+                    if (text[tok.loc.start] == '@') {
+                        return PositionContext{ .builtin = tok.loc };
                     }
                     const s = held_line[tok.loc.start..tok.loc.end];
                     const q = std.mem.indexOf(u8, s, "\"") orelse return .other;
@@ -3297,11 +3291,7 @@ pub fn getPositionContext(
                 },
                 .identifier => switch (curr_ctx.ctx) {
                     .empty, .pre_label, .var_access => curr_ctx.ctx = .{ .var_access = tok.loc },
-                    .label => |filled| if (!filled) {
-                        curr_ctx.ctx = .{ .label = true };
-                    } else {
-                        curr_ctx.ctx = .{ .var_access = tok.loc };
-                    },
+                    .label => curr_ctx.ctx = .{ .label = true },
                     .enum_literal => curr_ctx.ctx = .{
                         .enum_literal = tokenLocAppend(curr_ctx.ctx.loc().?, tok),
                     },
@@ -3325,12 +3315,10 @@ pub fn getPositionContext(
                     },
                 },
                 .keyword_break, .keyword_continue => curr_ctx.ctx = .pre_label,
-                .colon => if (curr_ctx.ctx == .pre_label) {
-                    curr_ctx.ctx = .{ .label = false };
-                } else if (curr_ctx.ctx == .var_access) {
-                    curr_ctx.ctx = .{ .label = true };
-                } else {
-                    curr_ctx.ctx = .empty;
+                .colon => switch (curr_ctx.ctx) {
+                    .pre_label => curr_ctx.ctx = .{ .label = true },
+                    .var_access => curr_ctx.ctx = .{ .label = false },
+                    else => curr_ctx.ctx = .empty,
                 },
                 .question_mark => switch (curr_ctx.ctx) {
                     .field_access => {},
@@ -3362,28 +3350,36 @@ pub fn getPositionContext(
                 else => {},
             }
         }
-    }
 
-    if (stack.popOrNull()) |state| {
-        switch (state.ctx) {
-            .empty => {},
-            .label => |filled| {
-                // We need to check this because the state could be a filled
-                // label if only a space follows it
-                if (!filled or prev_char != ' ') {
+        if (stack.popOrNull()) |state| {
+            switch (state.ctx) {
+                .empty => {},
+                .var_access => {
+                    if (lookahead and
+                        tokenizer.next().tag == .colon and
+                        tokenizer.next().tag == .l_brace)
+                    {
+                        return .{ .label = true };
+                    }
                     return state.ctx;
-                }
-            },
-            else => return state.ctx,
+                },
+                .label => |filled| {
+                    if (filled) return state.ctx;
+                    if (lookahead and tokenizer.next().tag == .l_brace) {
+                        return .{ .label = true };
+                    }
+                },
+                else => return state.ctx,
+            }
         }
     }
 
-    if (line.len == 0) return .empty;
+    if (line_loc.end - line_loc.start == 0) return .empty;
 
     const held_line = try allocator.dupeZ(u8, offsets.locToSlice(text, line_loc));
     defer allocator.free(held_line);
 
-    switch (line[0]) {
+    switch (held_line[0]) {
         'a'...'z', 'A'...'Z', '_', '@' => {},
         else => return .empty,
     }

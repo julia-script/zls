@@ -654,7 +654,7 @@ fn completeFileSystemStringLiteral(builder: *Builder, pos_context: Analyser.Posi
         .cinclude_string_literal,
         .embedfile_string_literal,
         .string_literal,
-        => |loc| .{ .start = loc.start + 1, .end = loc.end - 1 },
+        => |loc| .{ .start = loc.start + 1, .end = loc.end },
         else => unreachable,
     };
 

@@ -875,8 +875,9 @@ fn extractBuildInformation(
             try helper.addStepDependencies(&step_dependencies, root_source_file);
         }
 
-        for (compile.root_module.import_table.values()) |module| {
-            const root_source_file = module.root_source_file orelse continue;
+        var it = compile.root_module.iterateDependencies(compile, false);
+        while (it.next()) |item| {
+            const root_source_file = item.module.root_source_file orelse continue;
             try helper.addStepDependencies(&step_dependencies, root_source_file);
         }
 
@@ -924,9 +925,10 @@ fn extractBuildInformation(
             _ = try packages.addPackage("root", root_source_file.getPath(owner));
         }
 
-        for (compile.root_module.import_table.keys(), compile.root_module.import_table.values()) |import_name, module| {
-            const root_source_file = module.root_source_file orelse continue;
-            _ = try packages.addPackage(import_name, root_source_file.getPath(module.owner));
+        var it = compile.root_module.iterateDependencies(compile, false);
+        while (it.next()) |item| {
+            const root_source_file = item.module.root_source_file orelse continue;
+            _ = try packages.addPackage(item.name, root_source_file.getPath(item.module.owner));
         }
 
         try processPkgConfig(arena, &include_dirs, compile);
